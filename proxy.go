@@ -4,6 +4,8 @@ package main
 // https://github.com/bechurch/reverse-proxy-demo
 
 import (
+	"crypto/rsa"
+	"crypto/x509"
 	"encoding/json"
 	"io/ioutil"
 	"log"
@@ -15,17 +17,21 @@ import (
 )
 
 var (
-	auth_endpoint_url    string
-	auth_client_id       string
-	auth_client_secret   string
-	auth_scope           string
-	proxy_downstream_url string
-	proxy_port           string
-	access_token         string
-	token_type           string
-	token_refresh_time   time.Time
-	api_key              string
-	api_key_header       string
+	auth_endpoint_url     string
+	auth_client_id        string
+	auth_client_secret    string
+	auth_x509_cert        string
+	auth_x509_key         string
+	auth_x509_cert_parsed *x509.Certificate
+	auth_x509_key_parsed  *rsa.PrivateKey
+	auth_scope            string
+	proxy_downstream_url  string
+	proxy_port            string
+	access_token          string
+	token_type            string
+	token_refresh_time    time.Time
+	api_key               string
+	api_key_header        string
 )
 
 // Structure for storing results from a
@@ -61,13 +67,19 @@ func handleRequestAndRedirect(res http.ResponseWriter, req *http.Request) {
 	proxy.ServeHTTP(res, req)
 }
 
-// Gets (or refreshes) the access token using a jittered backed-off retry
-func getOuath2AuthAccessToken() {
+// Construct request body for an access token request using client id and client secret
+func getOuath2AuthAccessTokenWithClientIdSecret() {
 	request_body := url.Values{
 		"grant_type":    {"client_credentials"},
 		"client_id":     {auth_client_id},
 		"client_secret": {auth_client_secret},
 	}
+
+	doOauthRequest(request_body)
+}
+
+// Gets (or refreshes) the access token using a jittered backed-off retry
+func doOauthRequest(request_body url.Values) {
 	if auth_scope != "" {
 		request_body.Set("scope", auth_scope)
 	}
@@ -134,12 +146,12 @@ func getOuath2AuthAccessToken() {
 }
 
 // Go routine to handle token refresh on a loop
-func handleTokenRefresh() {
+func handleTokenRefresh(oauthFunc func()) {
 	for {
 		current_time := time.Now().UTC()
 		if current_time.After(token_refresh_time) {
 			log.Print("Refreshing access token")
-			getOuath2AuthAccessToken()
+			oauthFunc()
 		}
 		time.Sleep(30 * time.Second)
 	}
@@ -167,11 +179,17 @@ func getEnvironmentVariable(key string, required bool, secret bool, fallback str
 	return fallback
 }
 
-// Initialize variables from environment
-func initVariables() {
+func isEmpty(key1 string, key2 string) bool {
+	return key1 == "" && key2 == ""
+}
+
+// Initialize variables from environment, returns function for token request, based on env options
+func initVariables() func() {
 	auth_endpoint_url = getEnvironmentVariable("AUTH_ENDPOINT_URL", true, false, "")
 	auth_client_id = getEnvironmentVariable("AUTH_CLIENT_ID", true, true, "")
-	auth_client_secret = getEnvironmentVariable("AUTH_CLIENT_SECRET", true, true, "")
+	auth_client_secret = getEnvironmentVariable("AUTH_CLIENT_SECRET", false, true, "")
+	auth_x509_cert = getEnvironmentVariable("AUTH_X509_CERT", false, true, "")
+	auth_x509_key = getEnvironmentVariable("AUTH_X509_KEY", false, true, "")
 	auth_scope = getEnvironmentVariable("AUTH_SCOPE", false, false, "")
 	proxy_downstream_url = getEnvironmentVariable("PROXY_DOWNSTREAM_URL", true, false, "")
 	proxy_port = getEnvironmentVariable("PROXY_PORT", false, false, "10801")
@@ -179,6 +197,32 @@ func initVariables() {
 	if api_key != "" {
 		api_key_header = getEnvironmentVariable("PROXY_API_KEY_HEADER", false, false, "x-api-key")
 	}
+
+	if auth_client_secret == "" && isEmpty(auth_x509_cert, auth_x509_key) {
+		log.Fatal("Either a pair of client id+secret or x509 cert+key must be supplied")
+	}
+	if auth_client_secret != "" && !isEmpty(auth_x509_cert, auth_x509_key) {
+		log.Fatal("Both a pair of client id/secret and x509 cert+key is supplied, please supply only one of those")
+	}
+
+	// X509 cert mode, also parse certificates
+	if auth_client_secret == "" {
+		var err error
+		auth_x509_cert_parsed, err = parseX509CertFromPem(auth_x509_cert)
+		if err != nil {
+			log.Fatalf("Cannot parse X509 cert: %v", err)
+		}
+
+		auth_x509_key_parsed, err = parseRsaPrivateKeyFromPem(auth_x509_key)
+		if err != nil {
+			log.Fatalf("Cannot parse X509 RSA key: %v", err)
+		}
+
+		return getOuath2AuthAccessTokenWithX509
+	}
+
+	// Client id + secret mode
+	return getOuath2AuthAccessTokenWithClientIdSecret
 }
 
 // Main program entrypoint
@@ -187,17 +231,17 @@ func main() {
 
 	log.Print("Initializing proxy")
 
-	initVariables()
+	oauthFunc := initVariables()
 
 	log.Print("Getting initial access token")
-	getOuath2AuthAccessToken()
+	oauthFunc()
 
 	if access_token == "" {
 		log.Fatal("Failed to acquire initial access token - terminating")
 	}
 
 	log.Print("Starting access token refresh background routine")
-	go handleTokenRefresh()
+	go handleTokenRefresh(oauthFunc)
 
 	listen_address := ":" + proxy_port
 	http.HandleFunc("/", handleRequestAndRedirect)

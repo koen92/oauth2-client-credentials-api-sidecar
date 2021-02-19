@@ -48,6 +48,8 @@ The proxy is completely controlled via environment variables.
 * **`AUTH_ENDPOINT_URL`** : Full path to the OAuth2 token endpoint to be called when authenticating
 * **`AUTH_CLIENT_ID`** : The client ID that will be passed to the OAuth2 endpoint
 * **`AUTH_CLIENT_SECRET`** : The client secret that will be passed to the OAuth2 endpoint (obviously, keep this one secret and never check it into a GIT repo)
+* **`AUTH_X509_CERT`** : X509 cert to be used for [JWT Profile Authorization Grants](https://tools.ietf.org/html/rfc7523). This can be used as an alternative for the OAuth2 client secret.
+* **`AUTH_X509_KEY`** : X509 RSA key to be used for [JWT Profile Authorization Grants](https://tools.ietf.org/html/rfc7523). This can be used as an alternative for the OAuth2 client secret. (obviously, keep this one secret and never check it into a GIT repo) Either a combination of X509 cert and key OR client secret is required (and obviously, you cannot use both at the same time).
 * **`AUTH_SCOPE`** : (Optional) Space separated list of scopes to request from the OAuth2 token endpoint
 * **`PROXY_API_KEY`** : (Optional) If specified, the proxy passes this key in the API key header, which defaults to `x-api-key` but can be overridden using the `PROXY_API_KEY_HEADER` environment variable
 * **`PROXY_API_KEY_HEADER`** : (Optional, defaults to `x-api-key`) If the `PROXY_API_KEY` environment variable is specified, the API key value will be passed to the downstream with this named HTTP header
